@@ -4,8 +4,8 @@ Dự án phát triển hệ thống xe robot 4 bánh (4WD) điều khiển bằn
 
 ## 👥 Thành viên nhóm
 1. **Nguyễn Danh Khoa** - Lên ý tưởng, linh kiện cần thiết, lắp ráp xe
-2. **Phạm Tiến Lâm** - Chuẩn bị linh kiện, lắp ráp xe
-3. **Bùi Quang Minh** - Thử nghiệm xe, lắp ráp xe
+2. **Phạm Tiến Lâm** - Đóng góp ý tưởng, chuẩn bị linh kiện, lắp ráp xe
+3. **Bùi Quang Minh** - Đóng góp ý tưởng, lắp ráp xe, thử nghiệm xe
 
 ## 🚀 Các tính năng chính (4 Chế độ FSM)
 *   **Mode 0 (Dừng an toàn):** Khóa toàn bộ PWM, hệ thống phanh khẩn cấp.
