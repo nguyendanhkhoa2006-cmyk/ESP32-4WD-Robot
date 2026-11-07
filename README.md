@@ -1,2 +1,32 @@
-# ESP32-4WD-Robot
-Bài tập lớn xe robot 4WD dùng MicroPython lập trình điều khiển xe chạy trong 3 chế độ lái tự do, né vật cản, dò line
+#  Dự án Xe Robot Tự Hành 4WD ESP32 (MicroPython)
+
+Dự án phát triển hệ thống xe robot 4 bánh (4WD) điều khiển bằng vi điều khiển ESP32, sử dụng ngôn ngữ MicroPython. Hệ thống tích hợp máy chủ Web nội bộ (SoftAP) cho phép điều khiển qua Web App đa nền tảng, kết hợp các tính năng tự động nhờ cảm biến siêu âm và hồng ngoại.
+
+## 👥 Thành viên nhóm
+1. **Nguyễn Danh Khoa** - Lên ý tưởng, linh kiện cần thiết, lắp ráp xe
+2. **Phạm Tiến Lâm** - Chuẩn bị linh kiện, lắp ráp xe
+3. **Bùi Quang Minh** - Thử nghiệm xe, lắp ráp xe
+
+## 🚀 Các tính năng chính (4 Chế độ FSM)
+*   **Mode 0 (Dừng an toàn):** Khóa toàn bộ PWM, hệ thống phanh khẩn cấp.
+*   **Mode 1 (Lái thủ công qua Web App):** Điều khiển D-Pad ảo qua mạng Wi-Fi nội bộ. Tích hợp Watchdog tự động phanh khi mất kết nối > 400ms.
+*   **Mode 2 (Tự động né vật cản):** Quét chướng ngại vật bằng cảm biến siêu âm HC-SR04 (ngưỡng 20cm). Tự động lùi và đảo hướng (Memory Steering).
+*   **Mode 3 (Dò line PID):** Bám vạch đen trên nền trắng bằng cụm 5 cảm biến hồng ngoại TCRT5000. Thuật toán PID giúp xe ôm cua mượt và tự động tìm lại vạch khi bị trượt.
+
+## 🛠 Phần cứng sử dụng
+*   Vi điều khiển: Mạch phát triển ESP32-WROOM-32
+*   Khối chấp hành: 4 x Động cơ DC TT Gearbox + Driver L298N
+*   Cảm biến: 1 x HC-SR04 (Siêu âm), 5 x TCRT5000 (Hồng ngoại dò line)
+*   Nguồn cấp: Pin Lipo 3S (11.1V - 12.6V) + Mạch hạ áp LM2596 (5.1V)
+
+## 💻 Cấu trúc phần mềm
+Hệ thống sử dụng thư viện `uasyncio` để điều phối đa nhiệm thời gian thực trên một luồng duy nhất (Cooperative Multitasking).
+- Tần số CPU: 240MHz
+- Tần số băm xung PWM: 5kHz
+- Chu kỳ quét cảm biến (FSM): 20ms
+
+## 📥 Hướng dẫn cài đặt
+1. Cài đặt firmware MicroPython cho ESP32.
+2. Upload toàn bộ file trong thư mục `src/` vào bộ nhớ flash của ESP32.
+3. Cấp nguồn, dùng điện thoại kết nối vào Wi-Fi `XeRobot_ESP32` (Mật khẩu: `12345678`).
+4. Truy cập địa chỉ `http://192.168.4.1` để mở Web App và điều khiển.
