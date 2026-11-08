@@ -26,13 +26,20 @@ SPEED_MANUAL = 200
 SPEED_MANUAL_TURN = 220
 
 SPEED_BASE = 155
+SPEED_SLOW = 120
 SPEED_TURN = 185
 OBSTACLE_DIST = 20
+SLOW_DIST = 50
+CLEAR_DIST = 35
 MAX_DIST = 200.0
 PING_INTERVAL = 50
 CONFIRM_COUNT = 2
-T_BRAKE, T_BACK, T_PAUSE = 150, 400, 150
-T_TURN1, T_TURN2 = 1000, 1100
+T_BRAKE, T_BACK, T_PAUSE = 150, 350, 150
+T_TURN1 = 1000
+T_SCAN = T_TURN1 // 2
+T_ESCAPE = 3 * T_SCAN
+STUCK_WINDOW = 4000
+STUCK_TRIES = 3
 
 LF_WEIGHT = (-4, -2, 0, 2, 4)
 LF_SPEED_MAX = 160
@@ -47,13 +54,6 @@ LF_GAP_HOLD = 60
 LF_SWEEP_MS = 700
 LF_LOST_TIMEOUT = 3500
 LF_PIVOT_TIMEOUT = 1200
-LF_BACK_SPEED = 130
-LF_BACK_MAX = 700
-LF_BACK_EXTRA = 80
-LF_STRAIGHT_GAP = 200
-LF_EDGE_ERR = 2.0
-LF_ALIGN_TIMEOUT = 1500
-LF_OVERSHOOT_WINDOW = 600
 
 in1, in2 = Pin(IN1, Pin.OUT), Pin(IN2, Pin.OUT)
 in3, in4 = Pin(IN3, Pin.OUT), Pin(IN4, Pin.OUT)
@@ -107,16 +107,31 @@ def read_distance_cm():
     return duration * 0.0343 / 2.0
 
 
+def read_distance_median():
+    v = []
+    for _ in range(3):
+        v.append(read_distance_cm())
+        time.sleep_ms(12)
+    v.sort()
+    return v[1]
+
+
 class ObstacleAvoider:
-    DRIVE, BRAKE, BACK, PAUSE, TURN1, SETTLE, TURN2 = range(7)
+    (DRIVE, BRAKE, BACK, PAUSE, TURN_L, MEAS_L,
+     TURN_R, MEAS_R, TURN_BEST, ESCAPE) = range(10)
 
     def __init__(self):
+        self.tries = 0
+        self.last_avoid = 0
+        self.dist_l = MAX_DIST
+        self.dist_r = MAX_DIST
+        self.turn_time = 0
         self.reset()
 
     def reset(self):
         self.count = 0
+        self.dist = MAX_DIST
         self.last_ping = time.ticks_ms()
-        self.turn_dir = 1
         self._enter(self.DRIVE)
 
     def _enter(self, state):
@@ -127,10 +142,18 @@ class ObstacleAvoider:
         if time.ticks_diff(now, self.last_ping) < PING_INTERVAL:
             return
         self.last_ping = now
-        if read_distance_cm() < OBSTACLE_DIST:
+        self.dist = read_distance_cm()
+        if self.dist < OBSTACLE_DIST:
             self.count = min(self.count + 1, 255)
         else:
             self.count = 0
+
+    def _drive_speed(self):
+        if self.dist >= SLOW_DIST:
+            return SPEED_BASE
+        ratio = (self.dist - OBSTACLE_DIST) / (SLOW_DIST - OBSTACLE_DIST)
+        ratio = clamp(ratio, 0.0, 1.0)
+        return int(SPEED_SLOW + (SPEED_BASE - SPEED_SLOW) * ratio)
 
     def run(self):
         now = time.ticks_ms()
@@ -140,38 +163,80 @@ class ObstacleAvoider:
         if st == self.DRIVE:
             self._update_obstacle(now)
             if self.count >= CONFIRM_COUNT:
+                if time.ticks_diff(now, self.last_avoid) < STUCK_WINDOW:
+                    self.tries += 1
+                else:
+                    self.tries = 0
+                self.last_avoid = now
                 stop_robot()
                 self._enter(self.BRAKE)
             else:
-                drive(SPEED_BASE, SPEED_BASE)
+                s = self._drive_speed()
+                drive(s, s)
+
         elif st == self.BRAKE:
             if elapsed >= T_BRAKE:
                 drive(-SPEED_BASE, -SPEED_BASE)
                 self._enter(self.BACK)
+
         elif st == self.BACK:
             if elapsed >= T_BACK:
                 stop_robot()
                 self._enter(self.PAUSE)
+
         elif st == self.PAUSE:
             if elapsed >= T_PAUSE:
-                self.turn_dir = 1 if random.getrandbits(1) else -1
-                pivot(self.turn_dir, SPEED_TURN)
-                self._enter(self.TURN1)
-        elif st == self.TURN1:
-            if elapsed >= T_TURN1:
+                pivot(-1, SPEED_TURN)
+                self._enter(self.TURN_L)
+
+        elif st == self.TURN_L:
+            if elapsed >= T_SCAN:
                 stop_robot()
-                self._enter(self.SETTLE)
-        elif st == self.SETTLE:
+                self._enter(self.MEAS_L)
+
+        elif st == self.MEAS_L:
             if elapsed >= T_PAUSE:
-                if read_distance_cm() < OBSTACLE_DIST:
-                    pivot(-self.turn_dir, SPEED_TURN)
-                    self._enter(self.TURN2)
-                else:
-                    self.reset()
-        elif st == self.TURN2:
-            if elapsed >= T_TURN2:
+                self.dist_l = read_distance_median()
+                pivot(1, SPEED_TURN)
+                self._enter(self.TURN_R)
+
+        elif st == self.TURN_R:
+            if elapsed >= 2 * T_SCAN:
+                stop_robot()
+                self._enter(self.MEAS_R)
+
+        elif st == self.MEAS_R:
+            if elapsed >= T_PAUSE:
+                self.dist_r = read_distance_median()
+                self._decide()
+
+        elif st == self.TURN_BEST:
+            if elapsed >= self.turn_time:
                 stop_robot()
                 self.reset()
+
+        elif st == self.ESCAPE:
+            if elapsed >= T_ESCAPE:
+                stop_robot()
+                self.tries = 0
+                self.reset()
+
+    def _decide(self):
+        left_blocked = self.dist_l < CLEAR_DIST
+        right_blocked = self.dist_r < CLEAR_DIST
+
+        if (left_blocked and right_blocked) or self.tries >= STUCK_TRIES:
+            pivot(1, SPEED_TURN)
+            self._enter(self.ESCAPE)
+            return
+
+        if self.dist_r >= self.dist_l:
+            pivot(1, SPEED_TURN)
+            self.turn_time = T_SCAN
+        else:
+            pivot(-1, SPEED_TURN)
+            self.turn_time = 3 * T_SCAN
+        self._enter(self.TURN_BEST)
 
 
 MANUAL_CMDS = {
@@ -196,7 +261,7 @@ def run_manual(cmd):
 
 
 class LineFollower:
-    FOLLOW, PIVOT, BACKUP, ALIGN = range(4)
+    FOLLOW, PIVOT = 0, 1
 
     def __init__(self):
         self.reset()
@@ -208,41 +273,11 @@ class LineFollower:
         self.d_term = 0.0
         self.last_side = 0
         self.pivot_dir = 0
-        self.state_start = 0
+        self.pivot_start = 0
         self.last_l = 0
         self.last_r = 0
         self.lost_since = None
-        self.sweep_at = None
-        self.back_hit = None
-        self.back_side = 0
-        self.back_failed = False
-        self.after_dir = 0
-        self.after_at = time.ticks_ms()
         self.last_run = time.ticks_ms()
-
-    def _clear_pid(self):
-        self.integral = self.d_term = self.last_error = 0.0
-
-    def _start(self, state, now):
-        self.state = state
-        self.state_start = now
-
-    def _finish_turn(self, now):
-        self.state = self.FOLLOW
-        self._clear_pid()
-        self.after_dir = self.pivot_dir
-        self.after_at = now
-        self.back_failed = False
-
-    def _sweep(self, first_dir, now):
-        if self.sweep_at is None:
-            self.sweep_at = now
-        t = time.ticks_diff(now, self.sweep_at)
-        d = first_dir
-        if t >= LF_SWEEP_MS:
-            flip = ((t - LF_SWEEP_MS) // (2 * LF_SWEEP_MS)) & 1
-            d = first_dir if flip else -first_dir
-        pivot(d, LF_PIVOT_SPEED)
 
     def run(self):
         now = time.ticks_ms()
@@ -256,41 +291,11 @@ class LineFollower:
         active = sum(s)
         total = sum(LF_WEIGHT[i] for i in range(5) if s[i])
 
-        if self.state == self.BACKUP:
-            if self.back_hit is None and active:
-                self.back_hit = now
-                self.back_side = (total > 0) - (total < 0) or self.last_side
-            if self.back_hit is not None:
-                if time.ticks_diff(now, self.back_hit) < LF_BACK_EXTRA:
-                    drive(-LF_BACK_SPEED, -LF_BACK_SPEED)
-                    return
-                self.lost_since = None
-                self.sweep_at = None
-                if self.back_side:
-                    self.pivot_dir = self.back_side
-                    self._start(self.ALIGN, now)
-                else:
-                    self.state = self.FOLLOW
-            elif time.ticks_diff(now, self.state_start) > LF_BACK_MAX:
-                self.state = self.FOLLOW
-                self.back_failed = True
-            else:
-                drive(-LF_BACK_SPEED, -LF_BACK_SPEED)
-                return
-
-        if self.state == self.ALIGN:
-            if s[2] and not s[0] and not s[4] and active <= 2:
-                self._finish_turn(now)
-            elif time.ticks_diff(now, self.state_start) > LF_ALIGN_TIMEOUT:
-                self.state = self.FOLLOW
-            else:
-                pivot(self.pivot_dir, LF_PIVOT_SPEED)
-                return
-
         if self.state == self.PIVOT:
             if s[2]:
-                self._finish_turn(now)
-            elif time.ticks_diff(now, self.state_start) > LF_PIVOT_TIMEOUT:
+                self.state = self.FOLLOW
+                self.integral = self.d_term = self.last_error = 0.0
+            elif time.ticks_diff(now, self.pivot_start) > LF_PIVOT_TIMEOUT:
                 self.state = self.FOLLOW
             else:
                 pivot(self.pivot_dir, LF_PIVOT_SPEED)
@@ -303,42 +308,37 @@ class LineFollower:
 
             if lost < LF_GAP_HOLD:
                 drive(self.last_l, self.last_r)
-                return
-            if lost > LF_LOST_TIMEOUT:
-                stop_robot()
-                return
-
-            since_turn = time.ticks_diff(self.lost_since, self.after_at)
-            if self.after_dir and 0 <= since_turn < LF_OVERSHOOT_WINDOW:
-                self._sweep(-self.after_dir, now)
-            elif abs(self.last_error) < LF_EDGE_ERR and not self.back_failed:
-                if lost - LF_GAP_HOLD < LF_STRAIGHT_GAP:
+            elif self.last_side == 0:
+                if lost < 800:
                     drive(LF_SPEED_MIN, LF_SPEED_MIN)
                 else:
-                    self.back_hit = None
-                    self._start(self.BACKUP, now)
-                    drive(-LF_BACK_SPEED, -LF_BACK_SPEED)
+                    stop_robot()
+            elif lost > LF_LOST_TIMEOUT:
+                stop_robot()
             else:
-                self._sweep(self.last_side or 1, now)
+                t = lost - LF_GAP_HOLD
+                d = self.last_side
+                if t >= LF_SWEEP_MS:
+                    flip = ((t - LF_SWEEP_MS) // (2 * LF_SWEEP_MS)) & 1
+                    d = self.last_side if flip else -self.last_side
+                pivot(d, LF_PIVOT_SPEED)
             return
         self.lost_since = None
-        self.sweep_at = None
-        self.back_failed = False
 
         if active == 5:
-            self._clear_pid()
+            self.integral = self.d_term = self.last_error = 0.0
             self.last_l = self.last_r = LF_SPEED_MIN
             drive(LF_SPEED_MIN, LF_SPEED_MIN)
             return
 
         if s[0] and not s[1] and not s[2]:
-            self.pivot_dir = self.last_side = -1
-            self._start(self.PIVOT, now)
+            self.state, self.pivot_dir, self.last_side = self.PIVOT, -1, -1
+            self.pivot_start = now
             pivot(-1, LF_PIVOT_SPEED)
             return
         if s[4] and not s[3] and not s[2]:
-            self.pivot_dir = self.last_side = 1
-            self._start(self.PIVOT, now)
+            self.state, self.pivot_dir, self.last_side = self.PIVOT, 1, 1
+            self.pivot_start = now
             pivot(1, LF_PIVOT_SPEED)
             return
 
@@ -381,6 +381,7 @@ def set_mode(m):
     mode = m
     manual_cmd = "S"
     stop_robot()
+    avoider.tries = 0
     avoider.reset()
     follower.reset()
     print("Che do:", m)
